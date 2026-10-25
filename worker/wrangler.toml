@@ -1,0 +1,20 @@
+name = "token-monitor-hub"
+main = "src/index.js"
+compatibility_date = "2025-05-01"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "HubDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HubDO"]
+
+[vars]
+STALE_AFTER_MS = "600000"
+# Server permission only; each sending device must also opt in and negotiate its generation.
+TOKEN_MONITOR_SYNC_SESSION_TITLES = "false"
+
+# Set the shared secret with:
+#   wrangler secret put TOKEN_MONITOR_SECRET
+# Required for all private data routes.
