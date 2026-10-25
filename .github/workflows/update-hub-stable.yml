@@ -1,0 +1,30 @@
+name: Update Hub to latest stable release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: token-monitor-hub-stable
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'Harry-Jing/token-monitor' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Read the maintenance script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Publish the latest official stable Hub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: python3 .github/scripts/update-hub-stable.py
