@@ -42,6 +42,7 @@ test('default provider order follows tracked tools, named services, then third-p
     'zed',
     'commandcode',
     'mimo',
+    'muse',
     'zai',
     'zaiteam',
     'kiro',
@@ -58,6 +59,7 @@ test('default provider order follows tracked tools, named services, then third-p
     'alibaba',
     'stepfun',
     'notion',
+    'manus',
     'thirdparty'
   ]);
 });

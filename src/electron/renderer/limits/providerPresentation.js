@@ -38,6 +38,7 @@
     zed: { web: 'Web' },
     commandcode: { web: 'Web' },
     mimo: { web: 'Web' },
+    muse: { cli: 'CLI', web: 'Web' },
     zai: { api: 'API' },
     zaiteam: { api: 'API' },
     kiro: { cli: 'CLI' },
@@ -48,10 +49,11 @@
     minimax: { api: 'API' },
     openrouter: { api: 'API' },
     volcengine: { api: 'API', cli: 'arkcli' },
-    ollama: { web: 'Web' },
+    ollama: { api: 'API', web: 'Web' },
     trae: { api: 'Web' },
     alibaba: { web: 'Web' },
     stepfun: { web: 'Web' },
+    manus: { local: 'Local', web: 'Web' },
     thirdparty: { api: 'API' }
   };
 
@@ -76,6 +78,7 @@
     zed: ['Manual login', 'Web'],
     commandcode: ['Manual login', 'Web'],
     mimo: ['Auto', 'Desktop app', 'Token Plan'],
+    muse: ['Auto', 'CLI', 'Web', 'Manual'],
     zai: ['Auto', 'Coding Plan', 'API key'],
     zaiteam: ['Team Plan', 'API key'],
     kiro: ['Auto', 'CLI'],
@@ -87,11 +90,12 @@
     typesafe: ['Manual login', 'Web'],
     openrouter: ['Pay-as-you-go', 'API key'],
     volcengine: ['Auto', 'API key', 'CLI'],
-    ollama: ['Manual login', 'Web'],
+    ollama: ['Manual login', 'API/Web'],
     trae: ['Manual login', 'Web'],
     alibaba: ['Token Plan', 'Web'],
     stepfun: ['Coding/Token Plan', 'Web'],
     notion: ['Web', 'Manual'],
+    manus: ['Auto', 'Desktop app', 'Manual'],
     thirdparty: ['Relay', 'API']
   };
 
@@ -404,6 +408,8 @@
       || providerName === 'cursor'
       || (providerName === 'opencode' && source === 'web')
       || (providerName === 'mimo' && source === 'web')
+      || (providerName === 'manus' && source === 'web')
+      || (providerName === 'muse' && source === 'web')
       || (providerName === 'zed' && source === 'web');
   }
 
@@ -470,9 +476,9 @@
       // settings field, while a stale sign-in only opening Cline fixes. The shared
       // vocabulary carries one `unauthorized` for both, so the label reads the lane
       // off the row: providers/cline/limits.js reports `api` for a configured key
-      // and `oauth` for the discovered sign-in. This is the one provider whose
-      // status branches on source, and it does so because both causes are reachable
-      // with neither of them rarer than the other — the file lane is the discovery
+      // and `oauth` for the discovered sign-in. Its status branches on source
+      // because both causes are reachable with neither of them rarer than the
+      // other — the file lane is the discovery
       // default and its access token expires hourly. Grok and kiro name the vendor's
       // own action here for the same reason, without needing the split.
       if (providerName === 'cline') {
@@ -480,12 +486,21 @@
           ? { label: 'Update API key', tone: 'setup' }
           : { label: 'Open Cline', tone: 'setup' };
       }
+      // Ollama accepts an API key or a web session cookie; both causes land on
+      // `unauthorized`, so the label follows the lane the row was read from.
+      if (providerName === 'ollama') {
+        return sourceId(provider) === 'api'
+          ? { label: 'Update API key', tone: 'setup' }
+          : { label: 'Sign in again', tone: 'setup' };
+      }
       return providerName === 'openrouter' || providerName === 'deepseek' || providerName === 'minimax' || providerName === 'copilot' || providerName === 'factory' || providerName === 'zai' || providerName === 'zaiteam' || providerName === 'volcengine' || providerName === 'kimi'
         ? { label: 'Update API key', tone: 'setup' }
         : providerName === 'qoder' || providerName === 'trae'
           ? { label: 'Sign in again', tone: 'setup' }
           : providerName === 'grok'
           ? { label: 'Re-login', tone: 'setup' }
+          : providerName === 'muse'
+          ? { label: sourceId(provider) === 'web' ? 'Sign in again' : 'Run muse login', tone: 'setup' }
           : { label: 'Sign in again', tone: 'setup' };
     }
     if (status === 'rateLimited') return { label: 'Limited', tone: 'warn' };
@@ -493,9 +508,9 @@
     if (status === 'unavailable') return { label: 'Unavailable', tone: 'warn' };
     if (providerName === 'mimo' && status === 'error') return { label: 'Unavailable', tone: 'warn' };
     if (status === 'notConfigured') {
-      if (providerName === 'kimi') return { label: 'Add credential', tone: 'setup' };
+      if (providerName === 'kimi' || providerName === 'ollama') return { label: 'Add credential', tone: 'setup' };
       if (providerName === 'antigravity') return { label: 'Not set up', tone: 'setup' };
-      if (providerName === 'cursor' || providerName === 'copilot' || providerName === 'zed' || providerName === 'typesafe' || providerName === 'stepfun' || providerName === 'qoder' || providerName === 'trae' || providerName === 'workbuddy' || providerName === 'commandcode' || providerName === 'ollama' || providerName === 'alibaba') return { label: 'Sign in', tone: 'setup' };
+      if (providerName === 'cursor' || providerName === 'copilot' || providerName === 'zed' || providerName === 'typesafe' || providerName === 'stepfun' || providerName === 'qoder' || providerName === 'trae' || providerName === 'workbuddy' || providerName === 'commandcode' || providerName === 'alibaba' || providerName === 'ollama' || providerName === 'manus') return { label: 'Sign in', tone: 'setup' };
       if (providerName === 'thirdparty') return { label: 'Add credential', tone: 'setup' };
       // Cline joins the key-configured family: with neither a key nor a stored
       // sign-in, the one thing this application can be told is a key (the sign-in
@@ -503,6 +518,7 @@
       if (providerName === 'openrouter' || providerName === 'deepseek' || providerName === 'minimax' || providerName === 'factory' || providerName === 'zai' || providerName === 'zaiteam' || providerName === 'volcengine' || providerName === 'kimi' || providerName === 'cline') return { label: 'Add API key', tone: 'setup' };
       if (providerName === 'grok') return { label: 'Run grok login', tone: 'setup' };
       if (providerName === 'kiro') return { label: 'Run kiro-cli login', tone: 'setup' };
+      if (providerName === 'muse') return { label: sourceId(provider) === 'web' ? 'Add credential' : 'Install Muse Code', tone: 'setup' };
       return { label: 'Not set up', tone: 'setup' };
     }
     return status ? { label: 'Error', tone: 'warn' } : null;

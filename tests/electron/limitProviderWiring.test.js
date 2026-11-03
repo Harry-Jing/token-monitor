@@ -101,6 +101,8 @@ test('CREDENTIAL_SETTING_PATHS is exactly this set (the store is default-deny)',
     typesafeCookie: ['providers', 'typesafe', 'cookie'],
     stepfunToken: ['providers', 'stepfun', 'token'],
     notionCookie: ['providers', 'notion', 'cookie'],
+    manusSessionToken: ['providers', 'manus', 'sessionToken'],
+    museWebCookie: ['providers', 'muse', 'webCookie'],
     commandcodeCookie: ['providers', 'commandcode', 'cookie'],
     zaiApiKey: ['providers', 'zai', 'apiKey'],
     zaiTeamApiKey: ['providers', 'zaiTeam', 'apiKey'],
@@ -115,7 +117,9 @@ test('CREDENTIAL_SETTING_PATHS is exactly this set (the store is default-deny)',
     volcengineSecretAccessKey: ['providers', 'volcengine', 'secretAccessKey'],
     volcengineAgentAccessKeyId: ['providers', 'volcengine', 'agentAccessKeyId'],
     volcengineAgentSecretAccessKey: ['providers', 'volcengine', 'agentSecretAccessKey'],
+    ollamaApiKey: ['providers', 'ollama', 'apiKey'],
     ollamaCookie: ['providers', 'ollama', 'cookie'],
+    traeCookie: ['providers', 'trae', 'cookie'],
     traeAccessToken: ['providers', 'trae', 'accessToken'],
     traeDeviceId: ['providers', 'trae', 'deviceId'],
     alibabaCookie: ['providers', 'alibaba', 'cookie'],
@@ -164,14 +168,16 @@ test('LIMIT_PROVIDER_SETTING_KEYS is exactly this set (drives per-provider refre
     typesafe: ['typesafeCookie'],
     stepfun: ['stepfunToken'],
     notion: ['notionCookie', 'notionWorkspaceId'],
+    manus: ['manusSessionToken'],
+    muse: ['museWebCookie'],
     openrouter: ['openrouterProfiles'],
     minimax: ['minimaxApiKey', 'minimaxApiRegion', 'minimaxBillingMode'],
     volcengine: [
       'volcengineAccessKeyId', 'volcengineSecretAccessKey', 'volcengineRegion',
       'volcengineAgentAccessKeyId', 'volcengineAgentSecretAccessKey', 'volcengineAgentRegion'
     ],
-    ollama: ['ollamaCookie'],
-    trae: ['traeAccessToken', 'traeDeviceId'],
+    ollama: ['ollamaApiKey', 'ollamaCookie'],
+    trae: ['traeCookie', 'traeAccessToken', 'traeDeviceId'],
     alibaba: ['alibabaCookie', 'alibabaVariant'],
     thirdparty: ['thirdPartyProfiles']
   });
@@ -191,7 +197,8 @@ test('limitsConfigFromSettings env fallbacks and precedence', () => {
     TOKEN_MONITOR_TYPESAFE_COOKIE: 'env-typesafe-tm',
     TOKEN_MONITOR_WORKBUDDY_ACCESS_TOKEN: 'env-wb-tok',
     WORKBUDDY_ACCESS_TOKEN: 'env-wb-legacy',
-    TOKEN_MONITOR_WORKBUDDY_DOMAIN: 'env-wb-domain'
+    TOKEN_MONITOR_WORKBUDDY_DOMAIN: 'env-wb-domain',
+    TOKEN_MONITOR_OLLAMA_API_KEY: 'env-ollama-key'
   };
   const config = limitsConfigFromSettings({}, { env });
   assert.equal(config.claudeWebCookie, 'env-claude');
@@ -202,14 +209,16 @@ test('limitsConfigFromSettings env fallbacks and precedence', () => {
   assert.equal(config.typesafeCookie, 'env-typesafe-tm');
   assert.equal(config.workbuddyAccessToken, 'env-wb-tok');
   assert.equal(config.workbuddyDomain, 'env-wb-domain');
+  assert.equal(config.ollamaApiKey, 'env-ollama-key');
   // Legacy bare env names fill in when the prefixed one is absent.
   const legacyOnly = limitsConfigFromSettings({}, {
-    env: { TRAE_ACCESS_TOKEN: 'legacy-trae', ZED_COOKIE: 'legacy-zed', TYPESAFE_COOKIE: 'legacy-typesafe', WORKBUDDY_ACCESS_TOKEN: 'legacy-wb' }
+    env: { TRAE_ACCESS_TOKEN: 'legacy-trae', ZED_COOKIE: 'legacy-zed', TYPESAFE_COOKIE: 'legacy-typesafe', WORKBUDDY_ACCESS_TOKEN: 'legacy-wb', OLLAMA_API_KEY: 'legacy-ollama' }
   });
   assert.equal(legacyOnly.traeAccessToken, 'legacy-trae');
   assert.equal(legacyOnly.zedCookie, 'legacy-zed');
   assert.equal(legacyOnly.typesafeCookie, 'legacy-typesafe');
   assert.equal(legacyOnly.workbuddyAccessToken, 'legacy-wb');
+  assert.equal(legacyOnly.ollamaApiKey, 'legacy-ollama');
   // The Minimax region reaches the probe through the config layer, so the env
   // names must be declared on the field — minimaxRegion's own env lane is
   // shadowed by the configDefault this resolves to.
@@ -275,8 +284,8 @@ test('settings:update normalizes provider fields and strips separately managed a
     'volcengineSecretAccessKey', 'volcengineRegion', 'volcengineAgentAccessKeyId',
     'volcengineAgentSecretAccessKey', 'volcengineAgentRegion', 'qoderCookie', 'qoderSite',
     'devinBearerToken', 'devinOrganization', 'alibabaCookie', 'alibabaVariant',
-    'traeAccessToken', 'traeDeviceId', 'zedCookie', 'typesafeCookie', 'stepfunToken',
-    'commandcodeCookie', 'kimiApiKey', 'kimiWebAccessToken', 'ollamaCookie', 'notionCookie', 'notionWorkspaceId'
+    'traeCookie', 'traeAccessToken', 'traeDeviceId', 'zedCookie', 'typesafeCookie', 'stepfunToken',
+    'commandcodeCookie', 'kimiApiKey', 'kimiWebAccessToken', 'ollamaApiKey', 'ollamaCookie', 'notionCookie', 'notionWorkspaceId', 'manusSessionToken', 'museWebCookie'
   ].sort());
   for (const key of normalizedKeys) {
     const value = key === 'claudeWebCookie' ? 'sessionKey=sk-ant-test'
@@ -284,9 +293,9 @@ test('settings:update normalizes provider fields and strips separately managed a
     const patch = { [key]: value };
     const normalized = { ...patch };
     normalizeAccountPatch(patch, normalized);
-    assert.equal(normalized[key], normalizeAccountField(key, value), key);
+    assert.deepEqual(normalized[key], normalizeAccountField(key, value), key);
     if (fields.find((field) => field.key === key).persist !== 'spread') {
-      assert.equal(finalAccountSettings(patch, {})[key], normalized[key], key);
+      assert.deepEqual(finalAccountSettings(patch, {})[key], normalized[key], key);
     }
   }
   assert.equal(finalAccountSettings({}, {}).zaiApiRegion, 'global');
@@ -299,7 +308,7 @@ test('settings:update normalizes provider fields and strips separately managed a
   assert.equal(Object.hasOwn(finalAccountSettings({ kimiApiKey: 'x' }, {}), 'kimiApiKey'), false);
 
   const managedKeys = [
-    'codexManagedAccounts', 'antigravityManagedAccounts', 'mimoManagedAccounts',
+    'claudeManagedAccounts', 'codexManagedAccounts', 'antigravityManagedAccounts', 'mimoManagedAccounts',
     'workbuddyAccessToken', 'workbuddyUserId', 'workbuddyEnterpriseId',
     'workbuddyLocale', 'workbuddyDomain', 'workbuddyDepartmentInfo',
     'openrouterProfiles', 'thirdPartyProfiles'
@@ -334,6 +343,10 @@ test('the external URL allowlist admits exactly the provider consoles it should'
     'https://claude.ai/settings/billing',
     'https://cursor.com/settings',
     'https://www.cursor.com/settings',
+    'https://cursor.com/',
+    'https://www.cursor.com/',
+    'https://cursor.com/dashboard',
+    'https://www.cursor.com/dashboard',
     'https://opencode.ai/',
     'https://www.opencode.ai/auth',
     'https://openrouter.ai/settings/keys',
@@ -374,10 +387,29 @@ test('the external URL allowlist admits exactly the provider consoles it should'
     'https://www.javis-ai.com/token-monitor/'
   ];
   for (const url of allowed) assert.equal(isAllowedExternalUrl(url), true, url);
+
+  const cursorLoginStart = appSource.indexOf("  document.getElementById('cursorLoginButton').addEventListener");
+  const cursorLoginEnd = appSource.indexOf('\n  });', cursorLoginStart) + '\n  });'.length;
+  let cursorLogin;
+  const cursorUrls = [];
+  vm.runInNewContext(appSource.slice(cursorLoginStart, cursorLoginEnd), {
+    document: { getElementById: () => ({ addEventListener: (_event, handler) => { cursorLogin = handler; } }) },
+    window: { tokenMonitor: { openExternal: (url) => {
+      assert.equal(isAllowedExternalUrl(url), true, 'the Cursor login button must pass the main-process URL policy');
+      cursorUrls.push(url);
+    } } }
+  });
+  cursorLogin();
+  assert.deepEqual(cursorUrls, ['https://cursor.com']);
+
   const denied = [
     'https://claude.ai/',
     'https://claude.ai/login',
-    'https://cursor.com/',
+    'https://cursor.com/other',
+    'https://cursor.com/dashboard-other',
+    'https://cursor.com/dashboard/other',
+    'https://cursor.com.evil.com/dashboard',
+    'http://cursor.com/dashboard',
     'https://openrouter.ai/',
     'https://openrouter.ai/settings',
     'https://platform.deepseek.com/',
@@ -498,7 +530,8 @@ test('the renderer account config names the settings keys main must project', ()
 test('static account statuses refresh in both paths while descriptor panels use the form loop', () => {
   const config = evalTopLevel(appSource, 'const externalLimitAccountConfig = {', '\nfunction clearDisabledLimitProviderPendingChecks(');
   const expected = Object.keys(config).sort();
-  const calls = [...appSource.matchAll(/renderExternalProviderStatus\('([a-z]+)'\)/g)].map((match) => match[1]);
+  const calls = [...appSource.matchAll(/renderExternalProviderStatus\('([a-z]+)'\)/g)].map((match) => match[1])
+    .filter((provider) => expected.includes(provider));
   assert.deepEqual(calls.slice(0, expected.length).sort(), expected);
   assert.deepEqual(calls.slice(expected.length, expected.length * 2).sort(), expected);
   for (const provider of expected) {
@@ -566,4 +599,18 @@ test('MiniMax billing choice survives reload and clears only its provider quota'
   assert.equal(change.usageStructural, false);
   const { settingsLimitInvalidationPlan } = require('../../src/electron/deviceRuntimeCoordinator');
   assert.deepEqual(settingsLimitInvalidationPlan(change), [{ scope: { provider: 'minimax' }, reason: 'settings-change', options: { clear: true } }]);
+});
+
+test('Trae credential source follows the usable credential after a malformed stored value', () => {
+  for (const [key, envKey] of [['traeCookie', 'TRAE_COOKIE'], ['traeAccessToken', 'TRAE_ACCESS_TOKEN']]) {
+    const settings = { [key]: 'invalid\r\ncredential' };
+    const fallback = accountStatusProjection(settings, { [envKey]: 'usable-env-credential' });
+    assert.equal(fallback.traeAccessTokenConfigured, true);
+    assert.equal(fallback.traeAccessTokenSource, 'env');
+    const missing = accountStatusProjection(settings, {});
+    assert.equal(missing.traeAccessTokenConfigured, false);
+    assert.equal(missing.traeAccessTokenSource, '');
+    const saved = accountStatusProjection({ [key]: 'usable-stored-credential' }, { [envKey]: 'usable-env-credential' });
+    assert.equal(saved.traeAccessTokenSource, 'settings');
+  }
 });

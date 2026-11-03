@@ -20,6 +20,8 @@ const {
   devinCliDbDirs,
   devinDesktopAcpDirs
 } = require('./providers/devin/paths');
+const { cursorCacheDir } = require('./providers/cursor/usageEvents');
+const { senpiWatchSources } = require('./providers/senpi/paths');
 
 // Windows only: libuv asserts that the filename ReadDirectoryChangesW hands
 // back starts with the directory string it was given, and calls abort() when it
@@ -248,18 +250,10 @@ function clientSourceRoots(clientsCsv, options = {}) {
   // Electron shell over the same bundled droid kernel and keeps no session data
   // of its own, so this one root covers both.
   add('droid', ...simpleHostSourceRoots('droid', home));
-  // Tokscale resolves these two caches differently and the split is deliberate
-  // upstream, so mirror it rather than picking whichever looks tidier:
-  //   cursor.rs      — `home_dir().join(".config/tokscale/cursor-cache")`, a
-  //                    home-relative literal that never consults
-  //                    `get_config_dir()`. On Windows that is
-  //                    `%USERPROFILE%\.config\tokscale\`, not `%APPDATA%\tokscale\`,
-  //                    and TOKSCALE_CONFIG_DIR does not move it.
-  //   antigravity.rs — `paths::get_config_dir().join("antigravity-cache")`,
-  //                    routed that way on purpose so an isolated profile covers
-  //                    the sync cache too.
+  // Both caches honour TOKSCALE_CONFIG_DIR. Cursor defaults to ~/.config/tokscale
+  // on every platform; Antigravity uses the platform-aware tokscaleConfigDir().
   const tokscaleConfigRoot = tokscaleConfigDir({ env, platform, homeDir: home });
-  add('cursor', ['tokscale-cursor-cache', path.join(tokscaleHome, '.config', 'tokscale', 'cursor-cache')]);
+  add('cursor', ['tokscale-cursor-cache', cursorCacheDir({ env, platform, homeDir: home })]);
   add('antigravity',
     ['tokscale-antigravity-cache', path.join(tokscaleConfigRoot, 'antigravity-cache')],
     ['antigravity-extension-data', path.join(home, '.gemini', 'antigravity', 'conversations')]);
@@ -298,7 +292,10 @@ function clientSourceRoots(clientsCsv, options = {}) {
     ['copilot-otel', copilotOtelRoot],
     ['copilot-data', path.join(home, '.copilot'), path.join(home, '.copilot', 'data.db')],
     ['copilot-session-store', path.join(home, '.copilot'), path.join(home, '.copilot', 'session-store.db')],
-    ...[...new Set(copilotWorkspaceRoots)].map((dir) => ['vscode-workspace-storage', dir])
+    ...[...new Set(copilotWorkspaceRoots)].map((dir) => ['vscode-workspace-storage', dir]),
+    ...[...new Set(copilotWorkspaceRoots)].map((dir) => [
+      'vscode-empty-window-sessions', path.join(path.dirname(dir), 'globalStorage', 'emptyWindowChatSessions')
+    ])
   ];
   // The parent is the watch root because the exporter file may not exist yet;
   // the exact file is the source. watchAttributionRootsForClients() keeps that
@@ -313,6 +310,7 @@ function clientSourceRoots(clientsCsv, options = {}) {
   // rather than inventing an env override the scan does not honor.
   add('pi', ...simpleHostSourceRoots('pi', home));
   add('omp', ...simpleHostSourceRoots('omp', home));
+  if (enabled.has('senpi')) add('senpi', ...(options.senpiSources || senpiWatchSources({ ...options, homeDir: home, env, platform })).roots);
   // Zed: tokscale reads the XdgData root on every platform AND the native macOS
   // (Application Support) / Windows (LOCALAPPDATA) roots (see tokscale scanner.rs
   // cfg(macos)/cfg(windows) blocks) — watch all three so native mac/win users get
@@ -399,9 +397,15 @@ function clientSourceRoots(clientsCsv, options = {}) {
     ['workbuddy-projects', path.join(home, '.workbuddy', 'projects')],
     ['workbuddy-projects', path.join(home, '.workbuddy-ai', 'projects')]
   );
-  // Proma — session transcripts at ~/.proma/agent-sessions/*.jsonl. The fork
-  // parses it from tokscale's effective home, like the Qoder CN paths below.
-  add('proma', ['proma-sessions', path.join(tokscaleHome, '.proma', 'agent-sessions')]);
+  // Proma — tokscale reads the Agent journals and both SDK transcript trees of
+  // the release (.proma) and dev (.proma-dev) homes under its effective home.
+  // The optional agent-sessions.json index beside them is linking metadata,
+  // not usage, and is left to the periodic full tick rather than watching the
+  // whole home with its config and credentials.
+  add('proma', ...['.proma', '.proma-dev'].flatMap((base) => (
+    ['agent-sessions', path.join('sdk-config', 'sessions'), path.join('sdk-config', 'projects')]
+      .map((dir) => ['proma-sessions', path.join(tokscaleHome, base, dir)])
+  )));
   if (enabled.has('catpaw')) {
     const catpaw = catpawDataSources({ ...options, platform, env });
     add('catpaw',

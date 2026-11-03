@@ -29,7 +29,9 @@ const WORKER_SHARED_MODULES = Object.freeze([
   'subscriptionDisplay.js',
   'currency.js',
   'clientHealth.js',
+  'deviceKind.js',
   'hubProtocol.js',
+  'hubDelta.js',
   'syncContent.js',
   'hubBuildIdentity.js'
 ]);

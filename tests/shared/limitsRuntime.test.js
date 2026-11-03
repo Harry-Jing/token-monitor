@@ -544,6 +544,47 @@ test('an explicit identity removal drops a disappeared automatic account without
   runtime.stop();
 });
 
+test('a superseded Ollama identity lookup cannot consume the accepted account removal', async (t) => {
+  const { hashKey } = require('../../src/shared/hashKey');
+  let at = Date.parse('2026-10-25T00:00:00Z');
+  let identityPending = false;
+  const key = 'fixture-ollama-superseded-identity';
+  const runtime = createLimitsRuntime({ limitProviders: ['ollama'], ollamaApiKey: key }, runtimeDeps({
+    autoRetry: false,
+    env: {},
+    now: () => at,
+    fetch: async (url, init) => {
+      if (String(url).endsWith('/api/balance')) {
+        return { ok: true, status: 200, json: async () => ({ included: { balance_usd: 40, allowance_usd: 60 } }) };
+      }
+      if (at === Date.parse('2026-10-25T00:00:00Z')) {
+        return { ok: true, status: 200, json: async () => ({ Email: 'fixture@example.com', Plan: 'pro' }) };
+      }
+      identityPending = true;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(Object.assign(new Error('superseded'), { name: 'AbortError' })), { once: true });
+      });
+    }
+  }));
+  t.after(() => runtime.stop());
+
+  await runtime.refresh({ provider: 'ollama' }, 'manual');
+  assert.equal(runtime.getSnapshot().providers[0].accountKey, hashKey('ollama', 'fixture@example.com'));
+  at += 6 * 60 * 60 * 1000 + 1;
+  const superseded = runtime.refresh({ provider: 'ollama' }, 'manual');
+  await waitFor(() => identityPending, 'expired identity lookup');
+  const trailing = runtime.refresh({ provider: 'ollama' }, 'manual');
+  assert.equal((await superseded).superseded, true);
+  await trailing;
+
+  const rows = runtime.getSnapshot().providers;
+  assert.equal(rows.length, 1, 'the last accepted email identity must be retired even after a discarded lookup');
+  assert.equal(rows[0].accountKey, hashKey('ollama', `api-key:${key}`));
+  assert.equal(rows[0].status, 'ok');
+  assert.equal(rows[0].windows[0].remaining, 40);
+  assert.equal(JSON.stringify(rows).includes('removed'), false, 'control rows never enter the snapshot');
+});
+
 test('a new identity failure never retains the removed identity windows', async () => {
   const results = [
     [providerRow('mimo', 'A', 'Account A')],
@@ -1388,4 +1429,39 @@ test('transient status (unavailable) preserves lastGood windows so stale data is
   assert.equal(row.windows.length, 1);
   assert.equal(row.windows[0].usedPercent, 20);
   runtime.stop();
+});
+
+test('Muse anonymous source reset refreshes stay provider-wide without duplicate or retained identities', async () => {
+  for (const sources of [['web'], ['cli', 'web']]) {
+    const clock = fakeClock(Date.parse('2026-11-01T00:00:00Z'));
+    const reset = new Date(clock.now() + 1000).toISOString();
+    const calls = [];
+    let hasWeb = true;
+    const runtime = createLimitsRuntime({ limitProviders: ['muse'], limitsRefreshMs: 60_000 }, runtimeDeps({
+      autoStart: true, now: clock.now, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+      probeProvider: async (_provider, _config, context) => {
+        calls.push(context);
+        return sources.map((source) => source === 'web' && !hasWeb
+          ? { provider: 'muse', source, removed: true }
+          : { provider: 'muse', source, status: 'ok', accountLabel: source === 'web' ? 'Muse (Meta)' : '',
+            updatedAt: new Date(clock.now()).toISOString(), windows: [{ kind: 'weekly', usedPercent: calls.length, resetsAt: reset }] });
+      }
+    }));
+    try {
+      await waitFor(() => runtime.getSnapshot().providers.length === sources.length, 'Muse startup');
+      clock.advance(31_000);
+      await waitFor(() => calls.length >= 2, 'Muse reset dispatch');
+      await waitFor(() => runtime.getSnapshot().providers.some((row) => row.updatedAt === new Date(clock.now()).toISOString()), 'Muse reset commit');
+      assert.equal(runtime.getSnapshot().providers.length, sources.length);
+      assert.deepEqual(calls[1].scope, { provider: 'muse' });
+      assert.equal(calls.length, 2, 'simultaneous anonymous boundaries need one full-provider refresh');
+      await runtime.refresh({ provider: 'muse', accountLabel: 'Muse (Meta)' }, 'manual');
+      assert.equal(runtime.getSnapshot().providers.length, sources.length);
+      hasWeb = false;
+      await runtime.refresh({ provider: 'muse' }, 'credential-save');
+      assert.deepEqual(runtime.getSnapshot().providers.map((row) => row.source), sources.filter((source) => source !== 'web'));
+    } finally {
+      runtime.stop();
+    }
+  }
 });

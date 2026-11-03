@@ -216,10 +216,11 @@ test('Home limit percentages use the compact Limits view typography', () => {
   assert.match(cssRule(css, '.home-limit-window .home-list-value'), /line-height:\s*1\.1/);
 });
 
-test('Home billing-only limit rows span the full summary width', () => {
+test('Home billing-only and explicit wide limit rows span the full summary width', () => {
   const css = readRendererFile('styles.css');
-  assert.match(cssRule(css, '.home-limit-window:only-child'), /grid-column:\s*1 \/ -1/);
-  assert.match(cssRule(css, '.home-limit-window:only-child'), /max-width:\s*none/);
+  const rule = cssRule(css, '.home-limit-window:only-child,\n.home-limit-window-wide');
+  assert.match(rule, /grid-column:\s*1 \/ -1/);
+  assert.match(rule, /max-width:\s*none/);
 });
 
 test('Home limit provider settings stay compact and list only enabled providers', () => {
@@ -294,12 +295,13 @@ test('view switcher preserves click-to-cycle and direct selection without crowdi
   assert.match(cssRule(css, '.view-switcher-disclosure'), /flex:\s*0 0 24px/);
   assert.match(cssRule(css, '.view-switcher-menu'), /position:\s*absolute/);
   assert.match(cssRule(css, '.view-switcher-menu'), /width:\s*100%/);
-  assert.match(cssRule(css, '.view-switcher-menu'), /max-height:\s*min\(280px, calc\(100vh - 84px\)\)/);
+  assert.match(cssRule(css, '.view-switcher-menu'), /max-height:\s*calc\(100vh - 84px\)/);
+  assert.match(cssRule(css, '.view-switcher-menu'), /overflow:\s*hidden auto/);
   assert.match(cssRule(css, '.view-switcher-menu'), /transform-origin:\s*left bottom/);
   assert.match(cssRule(css, '.view-switcher-menu'), /transition:[\s\S]*opacity 190ms/);
   assert.match(cssRule(css, '.view-switcher-menu'), /visibility 0s linear 0s/);
   assert.doesNotMatch(cssRule(css, '.view-switcher-menu'), /width:\s*154px/);
-  const menuSurface = cssRule(css, '.view-switcher-menu,\n.select-control-popup,\n.sync-content-dialog,\n.settings-help-popover,\n.app-update-popover');
+  const menuSurface = cssRule(css, '.view-switcher-menu,\n.select-control-popup,\n.sync-content-dialog,\n.plugin-catalog-dialog,\n.settings-help-popover,\n.app-update-popover');
   assert.match(menuSurface, /background:[\s\S]*var\(--glass-rgb\)/);
   assert.doesNotMatch(menuSurface, /var\(--panel-rgb\)/);
   assert.doesNotMatch(cssRule(css, '.view-switcher-menu.hidden'), /display:\s*none/);

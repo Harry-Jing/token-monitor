@@ -200,6 +200,9 @@
       if (Number.isFinite(lastUsedMs)) native.set(key, { key, session: accounted
         ? { ...session, totalTokens: accounted.session.totalTokens, costUsd: accounted.session.costUsd,
           unpricedTokens: accounted.session.unpricedTokens, models: accounted.session.models,
+          inputTokens: accounted.session.inputTokens, cacheReadTokens: accounted.session.cacheReadTokens,
+          cacheWriteTokens: accounted.session.cacheWriteTokens, cacheReported: accounted.session.cacheReported,
+          tokenDataUnavailable: accounted.session.tokenDataUnavailable === true,
           nativeSessionId: session.nativeSessionId || accounted.session.nativeSessionId,
           t3ThreadId: session.t3ThreadId || accounted.session.t3ThreadId,
           parentSessionId: session.parentSessionId || accounted.session.parentSessionId,
@@ -244,9 +247,14 @@
         // could not reproduce from a flattened winner.
         models: session.models || (session.model ? { [session.model]: finite(session.totalTokens) || 0 } : {}),
         promptCache: session.promptCache || null,
+        reasoningEffort: sessionLive.isSessionReasoningEffortClient(session.client) ? session.reasoningEffort || null : null,
         contextTokens: finite(session.contextTokens),
         contextWindow: finite(session.contextWindow),
         totalTokens: finite(session.totalTokens) || 0,
+        inputTokens: finite(session.inputTokens) || 0,
+        cacheReadTokens: finite(session.cacheReadTokens) || 0,
+        cacheWriteTokens: finite(session.cacheWriteTokens) || 0,
+        cacheReported: session.cacheReported === true,
         costUsd: finite(session.costUsd ?? session.reportedCostUsd) || 0,
         ...(session.unpricedTokens > 0 ? { unpricedTokens: finite(session.unpricedTokens) || 0 } : {}),
         lastUsedAt: session.lastUsedAt || null,
@@ -350,10 +358,14 @@
           ? parent.title || parent.projectLabel || parent.sessionId.slice(0, 12) || '—' : summary.name,
         models,
         totalTokens: summary.value, costUsd: summary.cost,
+        inputTokens: members.reduce((sum, row) => sum + row.inputTokens, 0),
+        cacheReadTokens: members.reduce((sum, row) => sum + row.cacheReadTokens, 0),
+        cacheWriteTokens: members.reduce((sum, row) => sum + row.cacheWriteTokens, 0),
+        cacheReported: members.some(row => row.cacheReported),
         unpricedTokens: summary.unpricedTokens,
         tokenDataUnavailable: summary.tokenDataUnavailable === true,
         lastUsedAt: new Date(summary.sortTime).toISOString(),
-        // Context and cache are the latest main record’s own snapshots,
+        // Context and prompt-cache expiry are the latest main record’s snapshots,
         // inherited above; totals and activity cover the whole group.
         sessionGroup: summary.sessionGroup, subagentGroup: summary.subagentGroup, subagentCount: summary.subagentCount,
         running: sessionActivityState({ groupRows: members }) === 'running',
@@ -773,6 +785,7 @@
     const groupedSessions = items.some(item => item.metric === dockItems.SESSIONS_METRIC
       || (item.type === 'limit' && options.limitsEnabled !== false))
       ? groupedSessionRows(stats) : { rows: [], project: row => row, stateFor: sessionActivityState };
+    const pluginRefs = Array.isArray(options.availablePluginRefs) ? new Set(options.availablePluginRefs) : null;
     const cells = [];
     for (const item of items) {
       if (item.type === 'stat') {
@@ -780,6 +793,11 @@
         // item was configured with, and the projection is the only place that
         // knows how to apply them.
         cells.push(statCell(stats, item.metric, { ...options, ...item, groupedSessions }));
+      } else if (item.type === 'plugin') {
+        if (pluginRefs && !pluginRefs.has(item.ref)) continue;
+        // Plugin cells carry only their ref; the plugin's live content reaches
+        // the dock on its own channel and is drawn into the cell in place.
+        cells.push({ id: `plugin:${item.ref}`, kind: 'plugin', ref: item.ref });
       } else if (item.type === 'limit' && options.limitsEnabled !== false) {
         // An explicitly chosen provider keeps its slot while it has nothing to
         // report (it renders as `--`), so the user's layout does not reshuffle

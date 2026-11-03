@@ -68,12 +68,13 @@ const supportedToolOrder = [
   'GitHub Copilot',
   'Pi',
   'Oh My Pi',
+  'OmO Native',
   'Goose',
   'Zed',
   'Kilo',
   'Command Code',
   'MiMo Code / MiMo Desktop',
-  'Muse Code',
+  'Muse / Muse Code',
   'ZCode / GLM',
   'Kiro',
   'CodeBuddy',
@@ -97,6 +98,7 @@ const supportedToolOrder = [
   'Alibaba Cloud',
   'StepFun',
   'Notion AI',
+  'Manus',
   'Third-party APIs'
 ];
 
@@ -117,6 +119,7 @@ const supportedToolIdOrder = [
   'copilot',
   'pi',
   'omp',
+  'senpi',
   'goose',
   'zed',
   'kilo',
@@ -146,6 +149,7 @@ const supportedToolIdOrder = [
   'alibaba',
   'stepfun',
   'notion',
+  'manus',
   'thirdparty'
 ];
 

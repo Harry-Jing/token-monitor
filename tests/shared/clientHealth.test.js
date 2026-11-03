@@ -342,6 +342,24 @@ test('every source-root id the collector emits is in the allowlist', () => {
   }
 });
 
+test('senpi watches the OmO tree and the legacy senpi root, and the agent dir replaces only the latter', () => {
+  const homeDir = path.join(path.sep, 'tmp', 'source-home');
+  const options = { homeDir, platform: 'linux', env: {}, cwdDir: homeDir };
+  assert.deepEqual(clientSourceRoots('senpi', options).senpi, [
+    { id: 'senpi-sessions', dir: path.join(homeDir, '.senpi', 'agent', 'sessions') },
+    { id: 'senpi-omo-sessions', dir: path.join(homeDir, '.omo', 'agent', 'sessions') },
+    { id: 'senpi-omo-memory', dir: path.join(homeDir, '.omo', 'memory') },
+    { id: 'senpi-task-children', dir: path.join(homeDir, '.omo', 'senpi-task', 'children') }
+  ]);
+  const relocated = clientSourceRoots('senpi', {
+    ...options,
+    env: { SENPI_CODING_AGENT_DIR: '/custom/senpi-agent', SENPI_CODING_AGENT_SESSION_DIR: '/custom/sessions' }
+  }).senpi;
+  assert.equal(relocated[0].dir, path.join('/custom/senpi-agent', 'sessions'));
+  assert.equal(relocated[1].dir, path.join(homeDir, '.omo', 'agent', 'sessions'));
+  assert.equal(relocated.at(-1).dir, '/custom/sessions');
+});
+
 test('shared home-relative directories retain exact source roots, checks and watch candidates', () => {
   const homeDir = path.join(path.sep, 'tmp', 'source-home');
   const clients = 'droid,qwen,pi,omp,commandcode';
@@ -382,10 +400,10 @@ test('Claude source roots follow CLAUDE_CONFIG_DIR like tokscale', () => {
 });
 
 // The two self-synced caches resolve differently upstream and the difference is
-// load-bearing on Windows: cursor.rs hardcodes a home-relative literal, while
+// load-bearing on Windows without an override: Cursor stays home-relative, while
 // antigravity.rs routes through get_config_dir(). Assert both in one place so a
 // future tidy-up cannot quietly collapse them onto whichever one it noticed.
-test('the Cursor cache stays home-relative while Antigravity follows the config dir', () => {
+test('the default Cursor cache stays home-relative while Antigravity follows the config dir', () => {
   const homeDir = 'C:\\Users\\alice';
   const appData = 'C:\\Users\\alice\\AppData\\Roaming';
   const env = { APPDATA: appData };
@@ -409,7 +427,7 @@ test('the Cursor cache stays home-relative while Antigravity follows the config 
   );
 });
 
-test('TOKSCALE_CONFIG_DIR moves the Antigravity cache but not the Cursor one', () => {
+test('TOKSCALE_CONFIG_DIR moves both self-synced caches', () => {
   const homeDir = 'C:\\Users\\alice';
   const env = {
     APPDATA: 'C:\\Users\\alice\\AppData\\Roaming',
@@ -419,7 +437,7 @@ test('TOKSCALE_CONFIG_DIR moves the Antigravity cache but not the Cursor one', (
 
   assert.deepEqual(roots.cursor, [{
     id: 'tokscale-cursor-cache',
-    dir: path.join(homeDir, '.config', 'tokscale', 'cursor-cache')
+    dir: path.join(env.TOKSCALE_CONFIG_DIR, 'cursor-cache')
   }]);
   assert.deepEqual(roots.antigravity, [{
     id: 'tokscale-antigravity-cache',
@@ -430,19 +448,19 @@ test('TOKSCALE_CONFIG_DIR moves the Antigravity cache but not the Cursor one', (
   }]);
 });
 
-// The fork parses Proma and Qoder CN from tokscale-core home_dir() too, so their
-// watch roots must follow the same redirect rather than the Win32 profile.
-test('fork-only client roots follow an absolute Windows HOME override', () => {
+// Tokscale resolves Proma and the fork's Qoder CN from tokscale-core home_dir()
+// too, so their watch roots must follow the same redirect rather than the Win32
+// profile.
+test('home-relative Proma and Qoder CN roots follow an absolute Windows HOME override', () => {
   const roots = clientSourceRoots('proma,qodercn', {
     homeDir: 'C:\\Users\\alice',
     platform: 'win32',
     env: { APPDATA: 'C:\\Users\\alice\\AppData\\Roaming', HOME: 'D:\\profiles\\alice' }
   });
 
-  assert.deepEqual(roots.proma, [{
-    id: 'proma-sessions',
-    dir: path.join('D:\\profiles\\alice', '.proma', 'agent-sessions')
-  }]);
+  assert.deepEqual(roots.proma, ['.proma', '.proma-dev'].flatMap((base) => [
+    ['agent-sessions'], ['sdk-config', 'sessions'], ['sdk-config', 'projects']
+  ].map((dir) => ({ id: 'proma-sessions', dir: path.join('D:\\profiles\\alice', base, ...dir) }))));
   assert.deepEqual(roots.qodercn.find(({ id }) => id === 'qodercn-projects'), {
     id: 'qodercn-projects',
     dir: path.join('D:\\profiles\\alice', '.qoder-cn', 'projects')
@@ -607,7 +625,12 @@ test('labelling roots keeps diagnostics separate from watcher roots', () => {
         && root.id !== 'kiro-ide-globalstorage'
       ))
       .map((root) => root.dir);
-    assert.deepEqual(dirs, expected);
+    if (client === 'senpi') {
+      // Discovery ancestors are watch targets, while diagnostics continue to
+      // describe only the transcript sources. Their pruning is covered by
+      // senpiSources.test.js.
+      for (const dir of expected) assert.ok(dirs.includes(dir));
+    } else assert.deepEqual(dirs, expected);
   }
 });
 
@@ -619,7 +642,7 @@ test('clientSourceChecks collapses same-kind roots into one entry', () => {
   const ids = (client) => checks[client].map((check) => check.id);
   // The desktop and CLI databases are distinct sources, not same-kind variants:
   // both can exist at once, so each reports its own check.
-  assert.deepEqual(ids('copilot'), ['copilot-otel', 'copilot-data', 'copilot-session-store', 'vscode-workspace-storage']);
+  assert.deepEqual(ids('copilot'), ['copilot-otel', 'copilot-data', 'copilot-session-store', 'vscode-workspace-storage', 'vscode-empty-window-sessions']);
   assert.deepEqual(ids('zed'), ['zed-threads']);
   assert.deepEqual(ids('cline'), ['cline-tasks', 'cline-cli-sessions']);
   // The extension database is a direct parser source alongside the synced IDE

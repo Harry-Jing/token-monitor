@@ -3,9 +3,12 @@
 const fs = require('node:fs');
 const { createPromptCacheState, applyPromptCacheEntry } = require('../../sessionPromptCache');
 const { claudeSessionRoots } = require('./paths');
+const { readDesktopSessionTitles } = require('./desktopSessionTitles');
+const { envValue } = require('../../limits/providerHelpers');
 const { findSessionFiles } = require('../../sessionFiles');
 const { readT3SessionMeta } = require('../../t3SessionMetadata');
 const { normalizeSessionContext, shouldReadSessionContext } = require('../../sessionContext');
+const { normalizeReasoningEffort } = require('../../sessionLive');
 
 const TITLE_MAX_CODE_POINTS = 96;
 const TITLE_READ_CHUNK_BYTES = 256 * 1024;
@@ -20,6 +23,9 @@ const MAX_METADATA_LINE_BYTES = 64 * 1024;
 const LONG_LINE_HEAD_BYTES = 64 * 1024;
 const LONG_LINE_TAIL_BYTES = 8 * 1024;
 const titleCache = new Map();
+// Provenance of the winning title in the shared catalog-title ledger.
+const DESKTOP_TITLE_SOURCE = 'claude-desktop';
+const T3_TITLE_SOURCE = 't3';
 const MODEL_VERSION_END = '(?:$|[-@:\\[])';
 const CLAUDE_NATIVE_ONE_MILLION_MODEL = new RegExp(
   `^claude-(?:opus-(?:5${MODEL_VERSION_END}|4-(?:7|8)${MODEL_VERSION_END})`
@@ -219,6 +225,31 @@ function isUserPrompt(entry) {
   return asked;
 }
 
+function applyReasoningEffort(state, entry) {
+  if (entry.isSidechain === true || entry.isApiErrorMessage === true) return;
+  // A non-null per-turn override describes this response more specifically
+  // than the session setting. Older clients may record neither field.
+  const hasConfiguration = Object.hasOwn(entry, 'effort') || entry.perTurnEffort != null;
+  const stopReason = entry.message?.stop_reason;
+  if (!hasConfiguration && !(typeof stopReason === 'string' && stopReason)) return;
+  state.reasoningEffort = normalizeReasoningEffort(entry.perTurnEffort ?? entry.effort);
+}
+
+function assistantMetadataFromTail(tail) {
+  // Keep a message-level stop reason when available: complete JSON can still
+  // describe a streamed response whose missing configuration supplies no clear.
+  for (const match of tail.matchAll(/"(?:stop_reason|usage)"\s*:/g)) {
+    try { return JSON.parse('{"message":{' + tail.slice(match.index)); } catch (_) { /* Not a complete message suffix. */ }
+  }
+  // Prove a candidate belongs to the root by parsing its complete suffix.
+  // Nested tool inputs leave unmatched enclosing braces and are rejected.
+  // This uses the existing 8 KiB fragment, never the unbounded message body.
+  for (const match of tail.matchAll(/"(?:effort|perTurnEffort|isSidechain|isApiErrorMessage|uuid|timestamp|sessionId)"\s*:/g)) {
+    try { return JSON.parse('{' + tail.slice(match.index)); } catch (_) { /* Nested or incomplete suffix. */ }
+  }
+  return null;
+}
+
 function applyMetadataLine(state, line) {
   if (!line.length) return;
   try {
@@ -231,6 +262,7 @@ function applyMetadataLine(state, line) {
       const candidate = cleanTitle(entry.aiTitle);
       if (candidate) state.aiTitle = candidate;
     } else if (entry?.type === 'assistant') {
+      applyReasoningEffort(state, entry);
       // Claude stamps every assistant record with why it stopped. `tool_use`
       // means it paused to run tools and is still mid-turn; anything else
       // (`end_turn`, `stop_sequence`, `max_tokens`) means nothing further is
@@ -258,6 +290,7 @@ function applyMetadataLine(state, line) {
       // latch, and the session would read as finished while the new turn is
       // still being generated. The next assistant record restores the reading.
       state.userSinceStop = true;
+      if (entry.type === 'user' && entry.isSidechain !== true) state.reasoningEffort = null;
     }
   } catch (_) { /* skip partial or unrelated lines */ }
 }
@@ -277,7 +310,7 @@ function consumeMetadataBytes(state, chunk) {
       // `stop_reason` in the next read chunk, so the previous reading
       // survived and the row kept a turn state the transcript had replaced.
       keepLongLineTail(state, bytes.subarray(lineStart, index));
-      applyLongLineFragments(state);
+      applyLongLineFragments(state, true);
       state.droppingLongLine = false;
     } else {
       let lineEnd = index;
@@ -392,13 +425,28 @@ function oversizedRecordKind(head, tail) {
 // than a tool_result, and an assistant record reports the stop_reason it ends
 // with. Anything else leaves the state untouched, exactly as a full parse of an
 // unrelated record would.
-function applyLongLineFragments(state) {
+function applyLongLineFragments(state, lineTerminated = false) {
   const head = (state.longLineHead || Buffer.alloc(0)).toString('utf8');
   const tail = (state.longLineTail || Buffer.alloc(0)).toString('utf8');
   state.longLineHead = Buffer.alloc(0);
   state.longLineTail = Buffer.alloc(0);
   const kind = oversizedRecordKind(head, tail);
   if (kind === 'assistant') {
+    // Effort only uses terminated JSONL records on this bounded path. Keep
+    // prior effort at EOF rather than scanning discarded content for closure.
+    const metadata = lineTerminated ? assistantMetadataFromTail(tail) : null;
+    // The flags can precede message content in the head or follow it in the
+    // root suffix. Never let a sidechain or synthetic error replace main effort.
+    const messageAt = head.indexOf('"message"');
+    let prefix = {};
+    if (messageAt >= 0) {
+      try { prefix = JSON.parse(head.slice(0, messageAt).replace(/,\s*$/, '') + '}'); } catch (_) { /* Incomplete prefix. */ }
+    }
+    // A complete root prefix can carry configuration even when the tail has
+    // no metadata. Missing configuration still supplies no clear on its own.
+    if (lineTerminated) {
+      applyReasoningEffort(state, { ...prefix, ...metadata });
+    }
     // The usage reading is taken before the stop_reason guard below, matching
     // the ordinary path, which applies usage whether or not stop_reason states
     // anything. Claude persists `stop_reason: null` on some assistant records
@@ -462,11 +510,17 @@ function applyLongLineFragments(state) {
   // written is matched on the bytes that have arrived.
   const asString = /^"content"\s*:\s*"([^"]*)/.exec(after);
   if (asString) {
-    if (asString[1].trim().length > 0) state.userSinceStop = true;
+    if (asString[1].trim().length > 0) {
+      state.userSinceStop = true;
+      if (lineTerminated && !/"isSidechain"\s*:\s*true/.test(flags)) state.reasoningEffort = null;
+    }
     return;
   }
   if (/"type"\s*:\s*"tool_result"/.test(after.slice(0, 400))) return;
-  if (/"type"\s*:\s*"(text|image)"/.test(after.slice(0, 400))) state.userSinceStop = true;
+  if (/"type"\s*:\s*"(text|image)"/.test(after.slice(0, 400))) {
+    state.userSinceStop = true;
+    if (lineTerminated && !/"isSidechain"\s*:\s*true/.test(flags)) state.reasoningEffort = null;
+  }
 }
 
 function readSessionTitle(filePath, deps = {}) {
@@ -496,6 +550,7 @@ function readSessionTitle(filePath, deps = {}) {
         aiTitle: cached.aiTitle || '',
         stopReason: cached.stopReason || '',
         userSinceStop: cached.userSinceStop === true,
+        ...(Object.hasOwn(cached, 'reasoningEffort') ? { reasoningEffort: cached.reasoningEffort } : {}),
         trailing: Buffer.isBuffer(cached.trailing) ? Buffer.from(cached.trailing) : Buffer.alloc(0),
         droppingLongLine: cached.droppingLongLine === true,
         // Carried across the append resume: a scan that stopped mid-record has
@@ -607,6 +662,22 @@ function resolveSessionMetadata(sessionIds, context) {
     delete invalidated.t3Title;
     metadata.set(key, invalidated);
   }
+  // Read only when some transcript carries no title record of its own.
+  let desktopTitles;
+  const desktopTitle = (sessionId) => {
+    // Like CLAUDE_CONFIG_DIR, a scoped home never inherits the host's LocalAppData.
+    // A worker's copied env is case-sensitive even on Windows.
+    const localAppData = deps.scopedHome ? '' : String(envValue(deps.env || process.env, 'LOCALAPPDATA') || '').trim();
+    desktopTitles ||= readDesktopSessionTitles(home, sessionIds, localAppData);
+    const title = cleanTitle(desktopTitles.titles.get(sessionId));
+    if (desktopTitles.titles.has(sessionId) || !desktopTitles.unavailableSessionIds.has(sessionId)) return title;
+    const key = `claude:${sessionId}`;
+    const cached = metadata.get(key);
+    // An unavailable store cannot remove the last known Desktop title. The
+    // ledger also covers a fresh process with no in-memory reader cache.
+    return cleanTitle(cached?.catalogTitleSource === DESKTOP_TITLE_SOURCE ? cached.catalogTitle
+      : deps.catalogTitleSources?.[key] === DESKTOP_TITLE_SOURCE ? deps.t3Titles?.[key] : '');
+  };
   const applyFile = (sessionId, filePath) => {
     const cached = metadata.get(`claude:${sessionId}`);
     let nativeMetadata = cached;
@@ -621,9 +692,28 @@ function resolveSessionMetadata(sessionIds, context) {
       filePath,
       nativeMetadata
     );
-    // A transcript supersedes any cached title-only catalog result.
+    // A transcript supersedes any cached title-only catalog result. Titles are
+    // re-derived below, so a Desktop fallback that has since gone away clears.
     delete meta.titleOnly;
-    const title = readSessionTitle(filePath, deps.claudeMetadataDeps);
+    delete meta.title;
+    delete meta.catalogTitle;
+    delete meta.catalogTitleSource;
+    const transcriptTitle = readSessionTitle(filePath, deps.claudeMetadataDeps);
+    const fallbackTitle = transcriptTitle ? '' : desktopTitle(sessionId);
+    const title = transcriptTitle || fallbackTitle;
+    // A Desktop title rides the catalog-title ledger. Once it is gone with
+    // nothing in its place, record the removal so anchored month/all-time rows
+    // drop that title instead of keeping it until the next full scan.
+    const key = `claude:${sessionId}`;
+    if (!title && !t3Metadata.has(sessionId) && deps.t3Titles?.[key]
+      && deps.catalogTitleSources?.[key] === DESKTOP_TITLE_SOURCE) {
+      invalidatedSessionIds.add(sessionId);
+      deps.invalidatedTitleKeys?.add(key);
+      // A later metadata pass in this collection must not replay the old
+      // anchor if an unrelated Desktop file is still unreadable.
+      meta.catalogTitle = null;
+      meta.catalogTitleSource = DESKTOP_TITLE_SOURCE;
+    }
     // The turn boundary rides the same scan and its cache, so asking for it
     // costs no second pass. Reported for every session rather than only a recent
     // one: it is what stops a session reading as running, and gating it on the
@@ -641,9 +731,11 @@ function resolveSessionMetadata(sessionIds, context) {
       ? normalizeSessionContext(index) || { contextTokens: 0, contextWindow: 0 } : undefined;
     result.set(sessionId, {
       ...meta,
+      ...(index && Object.hasOwn(index, 'reasoningEffort') ? { reasoningEffort: index.reasoningEffort } : {}),
       ...(index?.promptCacheState?.observation === undefined ? {}
         : { promptCache: index.promptCacheState.observation }),
       ...(title ? { title } : {}),
+      ...(fallbackTitle ? { catalogTitle: fallbackTitle, catalogTitleSource: DESKTOP_TITLE_SOURCE } : {}),
       ...(turnEnded === undefined ? {} : { turnEnded }),
       ...(sessionContext || {})
     });
@@ -658,14 +750,21 @@ function resolveSessionMetadata(sessionIds, context) {
   for (const sessionId of sessionIds) {
     const cached = metadata.get(`claude:${sessionId}`);
     // A failed lookup may reuse an explicit override, never an unlabelled title.
+    // A Desktop fallback shares the ledger but is no T3 override.
     const t3Title = t3Metadata.get(sessionId)?.title || cached?.t3Title
-      || (!invalidatedSessionIds.has(sessionId) && deps.t3Titles?.[`claude:${sessionId}`]);
+      || (!invalidatedSessionIds.has(sessionId)
+        && deps.catalogTitleSources?.[`claude:${sessionId}`] !== DESKTOP_TITLE_SOURCE
+        && deps.t3Titles?.[`claude:${sessionId}`]);
     if (!t3Title) continue;
     const transcriptMeta = result.get(sessionId);
     result.set(sessionId, {
       ...(transcriptMeta || cached || {}),
       title: t3Title,
       t3Title,
+      // Replace Desktop provenance, so a later T3 read miss still reuses it.
+      ...(transcriptMeta?.catalogTitleSource === DESKTOP_TITLE_SOURCE
+        || deps.catalogTitleSources?.[`claude:${sessionId}`] === DESKTOP_TITLE_SOURCE
+        ? { catalogTitleSource: T3_TITLE_SOURCE } : {}),
       ...(transcriptMeta?.title ? { titleFallback: transcriptMeta.title } : {}),
       ...(!transcriptMeta ? { titleOnly: true } : {})
     });
